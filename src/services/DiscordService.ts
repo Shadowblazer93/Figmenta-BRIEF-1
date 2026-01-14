@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Message, ChannelType, Partials, REST, Routes, Interaction, SlashCommandBuilder, PermissionFlagsBits, TextChannel } from 'discord.js';
+import { Client, GatewayIntentBits, Message, ChannelType, Partials, REST, Routes, Interaction, SlashCommandBuilder, PermissionFlagsBits, TextChannel, ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ComponentType } from 'discord.js';
 import { ConfigService } from './ConfigService.js';
 import { MemoryService } from './MemoryService.js';
 import { NscaleService } from './NscaleService.js';
@@ -6,6 +6,7 @@ import { KnowledgeService } from './KnowledgeService.js';
 
 export class DiscordService {
     private client: Client;
+    private userPromptCache = new Map<string, string>(); // userId -> prompt
 
     constructor(
         private configService: ConfigService,
@@ -120,6 +121,42 @@ export class DiscordService {
     }
 
     private async handleInteraction(interaction: Interaction) {
+        if (interaction.isStringSelectMenu()) {
+            if (interaction.customId === 'select-knowledge') {
+                await interaction.deferUpdate(); // Acknowledge selection
+                
+                const filename = interaction.values[0];
+                const userId = interaction.user.id;
+                const prompt = this.userPromptCache.get(userId);
+
+                if (!prompt) {
+                    await interaction.followUp({ content: 'Session expired or prompt lost. Please try again.', ephemeral: true });
+                    return;
+                }
+
+                try {
+                    await interaction.editReply({ content: `Analyzing **${filename}**...`, components: [] }); // Remove select menu
+
+                    const context = await this.knowledgeService.getFileContent(filename);
+                    if (!context) {
+                         await interaction.followUp('Could not retrieve file content.');
+                         return;
+                    }
+
+                    const response = await this.aiService.generateAnswerFromKnowledge(prompt, `Source: ${filename}\nContent:\n${context}`);
+                    await this.sendChunkedReply(interaction, response);
+                    
+                    // Cleanup
+                    this.userPromptCache.delete(userId);
+
+                } catch (error) {
+                    console.error('Error processing knowledge selection:', error);
+                    await interaction.followUp('Something went wrong processing your request.');
+                }
+            }
+            return;
+        }
+
         if (!interaction.isChatInputCommand()) return;
 
         if (interaction.commandName === 'bot-setup') {
@@ -156,17 +193,40 @@ export class DiscordService {
                 await this.sendChunkedReply(interaction, content);
             }
         } else if (interaction.commandName === 'knowledge-prompt') {
-            await interaction.deferReply();
+            await interaction.deferReply(); // Public so it can be logged in memory
             const question = interaction.options.getString('question', true);
 
             try {
-                // 1. Gather Context
-                const context = await this.knowledgeService.searchRelevantContext(question);
+                const files = await this.knowledgeService.listFiles();
+                
+                if (files.length === 0) {
+                    await interaction.editReply('Knowledge base is empty.');
+                    return;
+                }
 
-                // 2. Generate Response
-                const response = await this.aiService.generateAnswerFromKnowledge(question, context);
+                // Temporary cache the prompt
+                this.userPromptCache.set(interaction.user.id, question);
 
-                await this.sendChunkedReply(interaction, response);
+                // Discord limits select menus to 25 items
+                const options = files.slice(0, 25).map(file => 
+                    new StringSelectMenuOptionBuilder()
+                        .setLabel(file.substring(0, 100)) // Label limit
+                        .setValue(file)
+                );
+
+                const select = new StringSelectMenuBuilder()
+                    .setCustomId('select-knowledge')
+                    .setPlaceholder('Select a document for context')
+                    .addOptions(options);
+
+                const row = new ActionRowBuilder<StringSelectMenuBuilder>()
+                    .addComponents(select);
+
+                await interaction.editReply({
+                    content: `Please select a document to answer: "${question}"`,
+                    components: [row]
+                });
+
             } catch (error) {
                 console.error('Error handling knowledge prompt:', error);
                 await interaction.editReply('Sorry, something went wrong while accessing knowledge base.');

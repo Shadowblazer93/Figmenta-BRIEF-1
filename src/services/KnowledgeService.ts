@@ -31,4 +31,29 @@ export class KnowledgeService {
             return '';
         }
     }
+
+    async listFiles(): Promise<string[]> {
+        const pool = this.dbService.getPool();
+        try {
+            const result = await pool.query('SELECT filename FROM knowledge_base ORDER BY filename ASC');
+            return result.rows.map(row => row.filename);
+        } catch (error) {
+            console.error('Error listing files:', error);
+            return [];
+        }
+    }
+
+    async getFileContent(filename: string): Promise<string> {
+        const pool = this.dbService.getPool();
+        try {
+            const result = await pool.query('SELECT content FROM knowledge_base WHERE filename = $1', [filename]);
+            if (result.rows.length === 0) return '';
+            // Truncate to avoid massive tokens if file is huge, though user asked for "full" context logic
+            // Let's limit to ~15000 chars approx
+            return result.rows[0].content.substring(0, 15000);
+        } catch (error) {
+            console.error('Error getting file content:', error);
+            return '';
+        }
+    }
 }
