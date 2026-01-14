@@ -9,13 +9,14 @@ export class KnowledgeService {
         try {
             // Using PostgreSQL full text search to find relevant content
             // Using ts_headline to extract relevant snippets and avoid exceeding token limits
+            // Added filename to search vector so users can search by document name
             const result = await pool.query(`
                 SELECT 
                     filename,
                     ts_headline('english', content, plainto_tsquery('english', $1), 'StartSel=**, StopSel=**, MaxWords=2000, MinWords=200') as snippet
                 FROM knowledge_base 
-                WHERE to_tsvector('english', content) @@ plainto_tsquery('english', $1)
-                ORDER BY ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) DESC
+                WHERE to_tsvector('english', filename || ' ' || content) @@ plainto_tsquery('english', $1)
+                ORDER BY ts_rank(to_tsvector('english', filename || ' ' || content), plainto_tsquery('english', $1)) DESC
                 LIMIT 3
             `, [query]);
 
